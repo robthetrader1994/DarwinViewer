@@ -72,6 +72,9 @@
   .ret.up { color:var(--green); }
   .ret.down { color:var(--red); }
   .ret-lbl { font-size:10px; color:var(--muted); text-align:right; text-transform:uppercase; letter-spacing:0.5px; }
+  .day { font-size:11px; font-weight:600; text-align:right; margin-top:2px; }
+  .day.up { color:var(--green); }
+  .day.down { color:var(--red); }
   .del {
     background:transparent; border:none; color:var(--muted);
     font-size:19px; cursor:pointer; line-height:1; padding:4px; border-radius:6px;
@@ -173,6 +176,8 @@
 
 const REFRESH_SECONDS = 60;
 const API_BASE = "https://www.darwinexzero.com/api/productquotes/quotes/name?productName=";
+// start-of-day = today's opening value, e.g. .../historical/ILWF.5.14/start-of-day -> 104
+const SOD_BASE  = "https://www.darwinexzero.com/api/productquotes/historical/";
 const INCEPTION_BASE = 100;
 const SHOW_RETURN = true;
 
@@ -231,6 +236,21 @@ async function fetchQuote(name) {
   if (!res.ok) throw new Error("HTTP " + res.status);
   const data = await res.json();
   return Array.isArray(data) ? data[0] : data;
+}
+
+// today's opening value (a bare number like 104). Returns null on any failure
+// so a missing start-of-day never blocks the row.
+async function fetchStartOfDay(name) {
+  try {
+    const proxy = getProxy();
+    const apiUrl = SOD_BASE + encodeURIComponent(name) + "/start-of-day";
+    const url = proxy ? proxy + encodeURIComponent(apiUrl) : apiUrl;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const txt = (await res.text()).trim();
+    const n = parseFloat(txt);
+    return isFinite(n) ? n : null;
+  } catch (e) { return null; }
 }
 
 // ---------- helpers ----------
@@ -325,6 +345,14 @@ function renderRow(fi,j,name,total) {
       const ret=derivedReturn(val);
       rightWrap.appendChild(el("div","ret-lbl","since inception"));
       rightWrap.appendChild(el("div","ret "+(ret>=0?"up":"down"),(ret>=0?"+":"")+ret.toFixed(2)+"%"));
+
+      // daily % = (current - start-of-day) / start-of-day * 100
+      const sod = cached.sod;
+      if (sod && sod > 0) {
+        const day = (val - sod) / sod * 100;
+        rightWrap.appendChild(el("div","day "+(day>=0?"up":"down"),
+          (day>=0?"+":"")+day.toFixed(2)+"% today"));
+      }
     }
   }
 
@@ -352,12 +380,16 @@ async function refresh() {
   for (let i = 0; i < names.length; i++) {
     const name = names[i];
     try {
-      lastQuotes[name] = { quote: await fetchQuote(name) };
+      const q = await fetchQuote(name);
+      const sod = await fetchStartOfDay(name);   // today's open (may be null)
+      lastQuotes[name] = { quote: q, sod: sod };
     } catch (e1) {
       // one quick retry — the relay often fails intermittently under load
       await sleep(400);
       try {
-        lastQuotes[name] = { quote: await fetchQuote(name) };
+        const q = await fetchQuote(name);
+        const sod = await fetchStartOfDay(name);
+        lastQuotes[name] = { quote: q, sod: sod };
       } catch (e2) {
         lastQuotes[name] = { error: e2.message || "failed" };
         anyFail = true;
