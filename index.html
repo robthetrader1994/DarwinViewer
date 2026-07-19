@@ -342,24 +342,40 @@ async function refresh() {
   footerEl.textContent = "loading\u2026";
   render();
 
-  const results = await Promise.allSettled(names.map(fetchQuote));
+  // Fetch ONE AT A TIME so the free proxy relay doesn't choke.
+  // Each row updates as its quote arrives; one retry on failure.
   lastQuotes = {};
   let anyFail = false;
-  results.forEach((r,i)=>{
-    if (r.status==="fulfilled") lastQuotes[names[i]]={quote:r.value};
-    else { lastQuotes[names[i]]={error:r.reason.message||"failed"}; anyFail=true; }
-  });
 
-  render();
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    try {
+      lastQuotes[name] = { quote: await fetchQuote(name) };
+    } catch (e1) {
+      // one quick retry — the relay often fails intermittently under load
+      await sleep(400);
+      try {
+        lastQuotes[name] = { quote: await fetchQuote(name) };
+      } catch (e2) {
+        lastQuotes[name] = { error: e2.message || "failed" };
+        anyFail = true;
+      }
+    }
+    render();                       // show this row's result immediately
+    await sleep(150);               // small gap between requests
+  }
+
   footerEl.textContent = "updated " + new Date().toLocaleTimeString();
 
-  // CORS almost always shows as a failed fetch with no HTTP status
-  if (anyFail && Object.values(lastQuotes).every(q=>q.error)) {
-    bannerEl.innerHTML = "<b>Quotes blocked.</b> The browser likely blocked the request (CORS). " +
-      "Set a CORS proxy in \u2699 settings, or use the desktop extension.";
+  if (anyFail) {
+    bannerEl.innerHTML = "<b>Some quotes didn't load.</b> The free relay was busy \u2014 " +
+      "hit \u21BB refresh to retry the missing ones.";
     bannerEl.classList.add("show");
   }
 }
+
+// small delay helper
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
 // ---------- settings ----------
 function openSettings() {
